@@ -3,9 +3,10 @@ import os
 import streamlit as st
 from pathlib import Path
 import pdfplumber
+from huggingface_hub import login
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
@@ -20,13 +21,13 @@ os.makedirs(VECTOR_FOLDER, exist_ok=True)
 # MODELS
 @st.cache_resource
 def load_models():
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # Intégration directe du token
+    hf_token = ""
+    
+    # Authentification explicite pour éviter l'erreur 401
+    login(token=hf_token)
 
-    hf_token = os.getenv("HF_TOKEN") or st.sidebar.text_input(
-        "Token Hugging Face", type="password", key="hf"
-    )
-    if not hf_token:
-        st.stop()
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
     llm = HuggingFaceEndpoint(
         repo_id="mistralai/Mistral-7B-Instruct-v0.2",
@@ -41,13 +42,14 @@ embeddings, chat_model = load_models()
 
 # VECTORSTORE 
 vectorstore = None
-if os.path.exists(os.path.join(VECTOR_FOLDER, "faiss.index")):
+# Correction du chemin pour le chargement local
+if os.path.exists(os.path.join(VECTOR_FOLDER, "index.faiss")):
     try:
         vectorstore = FAISS.load_local(
-            VECTOR_FOLDER, embeddings, "faiss.index", allow_dangerous_deserialization=True
+            VECTOR_FOLDER, embeddings, allow_dangerous_deserialization=True
         )
-    except:
-        st.warning("Index corrompu → recréation à la prochaine ingestion")
+    except Exception as e:
+        st.warning(f"Index corrompu ou introuvable : {e}")
 
 
 #  PDF → TEXT 
@@ -64,6 +66,7 @@ def pdf_to_text(path):
 def ingest_pdf(file_path):
     global vectorstore
     if vectorstore:
+        # Vérification si le document existe déjà
         if any(file_path.name in d.metadata.get("source", "") for d in vectorstore.docstore._dict.values()):
             return f"Déjà chargé : {file_path.name}"
 
@@ -80,7 +83,7 @@ def ingest_pdf(file_path):
     else:
         vectorstore.add_documents(docs)
 
-    vectorstore.save_local(VECTOR_FOLDER, "faiss.index")
+    vectorstore.save_local(VECTOR_FOLDER)
     return f"Chargé : {file_path.name} ({len(docs)} morceaux)"
 
 
@@ -109,8 +112,8 @@ def build_messages(prompt, context):
 
 
 #  UI 
-st.set_page_config(page_title="DocQA-MS", page_icon="doctor", layout="centered")
-st.title("DocQA-MS — Assistant Médical")
+st.set_page_config(page_title="RAG ChatBot", page_icon="🏥", layout="centered")
+st.title("RAG ChatBot")
 
 with st.sidebar:
     st.header("Documents")
@@ -154,7 +157,7 @@ for msg in st.session_state.messages:
 
 
 # Question utilisateur
-if prompt := st.chat_input("Votre question médicale..."):
+if prompt := st.chat_input("Votre question ..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -179,8 +182,11 @@ if prompt := st.chat_input("Votre question médicale..."):
                 messages = build_messages(prompt, context)
 
                 # Appel LLM
-                answer = chat_model.invoke(messages).content.strip()
-                reponse = answer or "Aucune réponse générée."
+                try:
+                    answer = chat_model.invoke(messages).content.strip()
+                    reponse = answer or "Aucune réponse générée."
+                except Exception as e:
+                    reponse = f"Erreur lors de l'appel au modèle : {e}"
 
             st.markdown(reponse)
             if sources:
